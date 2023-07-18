@@ -6,6 +6,7 @@ from tensorflow.keras.layers import Dense, Reshape, Flatten, concatenate
 from tensorflow.keras.layers import Conv2D, Conv2DTranspose
 from tensorflow.keras.layers import LeakyReLU, Dropout
 from sklearn.model_selection import train_test_split
+import librosa
 
 
 
@@ -137,8 +138,34 @@ def train(generator, discriminator, gan, trackset1, trackset2, epochs, batch_siz
 
 
     
+
+from pydub import AudioSegment
+
+def preprocess_audio(audio_file):
+    # Load the audio file using pydub
+    audio = AudioSegment.from_file(audio_file)
+
+    # Convert the audio to a numpy array and normalize to the range [-1, 1]
+    audio_data = np.array(audio.get_array_of_samples()) / 32768.0
+
+    # Resample the audio if needed
+    sr = audio.frame_rate
+    if sr != 22050:
+        audio_data = librosa.resample(audio_data, sr, 22050)
+        sr = 22050
+
+    # Extract MFCC features
+    mfcc = librosa.feature.mfcc(y=audio_data, sr=sr, n_mfcc=13)  # Adjust the number of MFCC coefficients if needed
+
+    return mfcc
+
+
+
+
+import os
+
 def dataset_loader():
-    BASE_PATH = 'C:/Users/buysa/OneDrive/Documents/pythonProjects/songmaker/Data/genres_original'
+    BASE_PATH = 'Data/genres_original'
 
     # Load the preprocessed MFCC features and corresponding labels
     features = []
@@ -148,8 +175,8 @@ def dataset_loader():
     for root, dirs, files in os.walk(BASE_PATH):
         for file in files:
             # Load the MFCC features
-            feature_path = os.path.join(root, file.replace(".wav", ".npy"))
-            mfcc = np.load(feature_path)
+            audio_path = os.path.join(root, file)
+            mfcc = preprocess_audio(audio_path)
 
             # Load the genre label from the folder name
             label = os.path.basename(root)
@@ -163,6 +190,8 @@ def dataset_loader():
     labels = np.array(labels)
 
     return features, labels
+
+
 
 # Load the dataset
 trackset, labels = dataset_loader()
