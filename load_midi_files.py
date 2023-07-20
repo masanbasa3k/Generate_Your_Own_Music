@@ -4,16 +4,13 @@ import util
 import numpy as np
 
 patterns = {}
-dirs = ["archive/split_midi/split_midi"]
+dirs = ["archive"]
 all_samples = []
 all_lens = []
 print ("Loading Songs...")
-i = 0
 for dir in dirs:
 	for root, subdirs, files in os.walk(dir):
 		for file in files:
-			print(i)
-			i+=1
 			path = root + "/" + file
 			if not (path.endswith('.mid') or path.endswith('.midi')):
 				continue

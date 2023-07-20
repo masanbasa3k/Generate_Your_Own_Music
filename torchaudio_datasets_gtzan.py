@@ -1118,7 +1118,8 @@ class GTZAN(Dataset):
         return len(self._walker)
     
 
-dataset = GTZAN(root="/NewData", download=True, subset="training")
+# dataset = GTZAN(root="/NewData", download=True, subset="training")
+dataset = GTZAN(root="")
 num_items = len(dataset)
 
 all_waveforms = []
@@ -1129,4 +1130,3 @@ for i in range(num_items):
     waveform = waveform.numpy()  # Tensor'ü numpy dizisine dönüştür
     all_waveforms.append(waveform)
     all_labels.append(label)
-

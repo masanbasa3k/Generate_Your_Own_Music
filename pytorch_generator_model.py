@@ -175,7 +175,7 @@ input_size = 100  # Size of the random noise vector
 output_size = num_samples  # Size of the generated audio sample
 
 # Instantiate models
-generator = Generator(input_size, output_size)
+generator = Generator(input_size, output_size,10)
 discriminator = Discriminator(output_size, len(GTZAN_GENRES))
 
 
