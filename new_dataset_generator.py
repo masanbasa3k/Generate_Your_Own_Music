@@ -1,140 +1,115 @@
-import tensorflow as tf
-from tensorflow.keras import layers
-import os
-import random
-import mido
 import numpy as np
-import pretty_midi
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
 
-
-# MIDI dosyalarının bulunduğu dizini belirtin
-midi_dir = 'archive/split_midi/split_midi'
-
-# Tüm MIDI dosyalarının isimlerini alın
-midi_files = os.listdir(midi_dir)
-
-# Rasgele 100 MIDI dosyasını seçin
-selected_files = random.sample(midi_files, 100)
-
-# Seçilen MIDI dosyalarını yükle
-midi_data = []
-for file_name in selected_files:
-    file_path = os.path.join(midi_dir, file_name)
-    midi_data.append(mido.MidiFile(file_path))
-
-
-# Üreteç (Generator) Modeli Oluşturma
 def build_generator(latent_dim, output_shape):
-    model = tf.keras.Sequential()
-    model.add(layers.Dense(256, input_dim=latent_dim, activation='relu'))
-    model.add(layers.Dense(512, activation='relu'))
-    model.add(layers.Dense(1024, activation='relu'))
+    model = keras.Sequential()
+    model.add(layers.Dense(256, input_dim=latent_dim))
+    model.add(layers.LeakyReLU(alpha=0.2))
+    model.add(layers.BatchNormalization())
+    model.add(layers.Dense(512))
+    model.add(layers.LeakyReLU(alpha=0.2))
+    model.add(layers.BatchNormalization())
+    model.add(layers.Dense(1024))
+    model.add(layers.LeakyReLU(alpha=0.2))
+    model.add(layers.BatchNormalization())
     model.add(layers.Dense(output_shape, activation='tanh'))
     return model
 
-# Ayırt Edici (Discriminator) Modeli Oluşturma
 def build_discriminator(input_shape):
-    model = tf.keras.Sequential()
-    model.add(layers.Dense(1024, input_shape=input_shape, activation='relu'))
-    model.add(layers.Dropout(0.3))
-    model.add(layers.Dense(512, activation='relu'))
-    model.add(layers.Dropout(0.3))
-    model.add(layers.Dense(256, activation='relu'))
-    model.add(layers.Dropout(0.3))
+    model = keras.Sequential()
+    model.add(layers.Dense(1024, input_shape=input_shape))
+    model.add(layers.LeakyReLU(alpha=0.2))
+    model.add(layers.Dense(512))
+    model.add(layers.LeakyReLU(alpha=0.2))
+    model.add(layers.Dense(256))
+    model.add(layers.LeakyReLU(alpha=0.2))
     model.add(layers.Dense(1, activation='sigmoid'))
     return model
 
-# GAN Modelini Oluşturma
-def build_gan(generator, discriminator):
+def preprocess_midi_data(data):
+    # Convert the 'type' field to a numerical representation or one-hot encoding
+    type_mapping = {'note_on': 1, 'note_off': 0}
+    numerical_types = np.array([type_mapping[event['type']] for event in data], dtype=np.float32)
+
+    # Extract other numerical features (time, note, velocity)
+    time_values = np.array([event['time'] for event in data], dtype=np.float32)
+    note_values = np.array([event['note'] for event in data], dtype=np.float32)
+    velocity_values = np.array([event['velocity'] for event in data], dtype=np.float32)
+
+    # Stack all features horizontally to create the preprocessed data
+    preprocessed_data = np.stack((numerical_types, time_values, note_values, velocity_values), axis=-1)
+
+    return preprocessed_data
+
+def train_gan(generator, discriminator, combined, data, epochs=10000, batch_size=128, latent_dim=100):
+    preprocessed_data = preprocess_midi_data(data)
+
+    half_batch = batch_size // 2
+
+    for epoch in range(epochs):
+        # Train the discriminator
+        idx = np.random.randint(0, preprocessed_data.shape[0], half_batch)
+        real_data = preprocessed_data[idx]
+        real_labels = np.ones((half_batch, 1))
+
+        noise = np.random.normal(0, 1, (half_batch, latent_dim))
+        generated_data = generator.predict(noise)
+        generated_labels = np.zeros((half_batch, 1))
+
+        d_loss_real = discriminator.fit(real_data, real_labels, batch_size=half_batch, verbose=0)
+        d_loss_generated = discriminator.fit(generated_data, generated_labels, batch_size=half_batch, verbose=0)
+        d_loss = 0.5 * np.add(d_loss_real.history['loss'], d_loss_generated.history['loss'])
+
+        # Train the generator
+        noise = np.random.normal(0, 1, (batch_size, latent_dim))
+        valid_labels = np.ones((batch_size, 1))
+        g_loss = combined.fit(noise, valid_labels, batch_size=batch_size, verbose=0)
+
+        # Print the progress
+        print(f"Epoch: {epoch}, D Loss: {d_loss}, G Loss: {g_loss.history['loss']}")
+
+        # Save generated sequences
+        if epoch % save_interval == 0:
+            save_generated_sequences(generator, epoch)
+
+    # Save the final generator model
+    generator.save('generator_model.h5')
+
+
+def save_generated_sequences(generator, epoch, num_samples=10):
+    noise = np.random.normal(0, 1, (num_samples, latent_dim))
+    generated_data = generator.predict(noise)
+
+    # Save generated MIDI sequences as npy files or use any other method to handle the output
+    for i in range(num_samples):
+        generated_sequence = generated_data[i]
+        np.save(f"generated_midi_epoch_{epoch}_sample_{i}.npy", generated_sequence)
+
+if __name__ == "__main__":
+    npy_file = "output_combined.npy"  # Replace with the path to your combined MIDI data npy file
+
+    latent_dim = 100
+    midi_data = np.load(npy_file, allow_pickle=True)
+    data_shape = midi_data.shape  # The shape is (8120,) which is the correct format
+
+    # Build and compile the discriminator
+    discriminator = build_discriminator(input_shape=data_shape)
+    discriminator.compile(loss='binary_crossentropy', optimizer=keras.optimizers.Adam(learning_rate=0.0002, beta_1=0.5))
+
+    # Build and compile the generator
+    generator = build_generator(latent_dim, data_shape[0])
+    generator.compile(loss='binary_crossentropy', optimizer=keras.optimizers.Adam(learning_rate=0.0002, beta_1=0.5))
+
+    # Combined model (stack generator and discriminator)
+    z = layers.Input(shape=(latent_dim,))
+    generated_data = generator(z)
     discriminator.trainable = False
-    model = tf.keras.Sequential()
-    model.add(generator)
-    model.add(discriminator)
-    return model
+    validity = discriminator(generated_data)
 
-# Önceden belirlediğiniz latent boyutu ve çıkış şekline göre üreteç ve ayırt edici modelleri oluşturun
-latent_dim = 100  # Örnek olarak, latent boyutu 100 olarak belirledik
-output_shape = 128  # Örnek olarak, çıkış şekli 128 olarak belirledik
+    combined = keras.models.Model(z, validity)
+    combined.compile(loss='binary_crossentropy', optimizer=keras.optimizers.Adam(learning_rate=0.0002, beta_1=0.5))
 
-generator = build_generator(latent_dim, output_shape)
-discriminator = build_discriminator((output_shape,))
-
-# GAN modelini oluşturun
-gan = build_gan(generator, discriminator)
-
-# GAN'ı derleyin
-gan.compile(loss='binary_crossentropy', optimizer=tf.keras.optimizers.Adam(learning_rate=0.0002, beta_1=0.5))
-
-# Verileri hazırlayın ve eğitim döngüsünü başlatın
-# Bu adımlar GAN modelinizi eğitmenizi içerir ve veri ön işleme ve döngü yönetimine bağlı olarak değişiklik gösterecektir.
-# Daha uzun süre eğitim ve veri ön işleme gerektirebilir.
-def midi_to_2d_array(midi_data, output_shape):
-    # Initialize an empty 2D array to store the MIDI data
-    midi_array = np.zeros((len(midi_data), output_shape))
-
-    for i, midi in enumerate(midi_data):
-        # Get the ticks per beat from the MIDI file
-        ticks_per_beat = midi.ticks_per_beat
-
-        # Get the total number of ticks in the MIDI file
-        total_ticks = max([max(note.end for note in instrument.notes) for instrument in midi.instruments])
-
-        # Calculate the time step duration in ticks
-        ticks_per_step = total_ticks / output_shape
-
-        # Iterate through each time step and fill the MIDI array
-        for j in range(output_shape):
-            tick_start = int(j * ticks_per_step)
-            tick_end = int((j + 1) * ticks_per_step)
-
-            # Count the number of active notes at the current time step
-            num_active_notes = 0
-            for instrument in midi.instruments:
-                notes = [note for note in instrument.notes if tick_start <= note.start < tick_end]
-                num_active_notes += len(notes)
-
-            # Store the number of active notes in the MIDI array
-            midi_array[i, j] = num_active_notes
-
-    return midi_array
-
-# GAN modelini eğitin
-# Eğitim için örnek bir kod parçası:
-epochs = 1000
-batch_size = 32
-
-
-for epoch in range(epochs):
-    for i in range(0, len(midi_data), batch_size):
-        # Batch verilerini hazırlayın
-        batch_midi = midi_data[i:i+batch_size]
-        
-        # Verileri GAN modeline uygun hale getirin (örneğin, MIDI verilerini latent vektörlere dönüştürün)
-        # Örnek olarak, MIDI verilerini 2D matrislere dönüştüren bir fonksiyon kullanalım:
-        real_midi_2d = midi_to_2d_array(batch_midi, output_shape)
-
-        # Eğitim verileri ve etiketleri hazırlayın
-        real_labels = np.ones((batch_size, 1))  # Gerçek veri için etiketler (1)
-        fake_labels = np.zeros((batch_size, 1))  # Üretilen veri için etiketler (0)
-        
-        # Discriminator için eğitim verilerini birleştirin
-        discriminator_input = np.concatenate([real_midi_2d, generated_midi])
-        discriminator_labels = np.concatenate([real_labels, fake_labels])
-        
-        # Discriminator'ı eğitin
-        discriminator_loss = discriminator.train_on_batch(discriminator_input, discriminator_labels)
-
-        # Üreteç için rastgele gürültü vektörleri oluşturun
-        noise = tf.random.normal([batch_size, latent_dim])
-        
-        # Gan'ı eğitin ve gerçek etiketlerle güncelleyin
-        gan_labels = np.ones((batch_size, 1))
-        gan_loss = gan.train_on_batch(noise, gan_labels)
-        
-    # Her epoch sonunda kayıpları yazdırın
-    print(f"Epoch: {epoch}, Discriminator Loss: {discriminator_loss}, GAN Loss: {gan_loss}")
-
-# Modeli kaydedin
-generator.save('gan_generator.h5')
-discriminator.save('gan_discriminator.h5')
-gan.save('gan_model.h5')
+    # Train the GAN
+    train_gan(generator, discriminator, combined, midi_data)
