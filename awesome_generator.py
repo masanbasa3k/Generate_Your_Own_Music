@@ -10,14 +10,14 @@ from torch.nn.utils.rnn import pad_sequence  # Import pad_sequence from torch.nn
 data = []
 for i in range(1,10):
     d = midi_to_numeric(f'archive/{i}.mid')[0]
-    print(len(d))
+    print(f'{i}.mid file len :{len(d)}')
     data.append(d)
 
 # Find the maximum sequence length in the data
 max_sequence_length = max(len(seq) for seq in data)
 
 # Pad the sequences to the maximum length
-padding_token=-1
+padding_token = -1  # Choose an appropriate padding token
 padded_data = [torch.tensor(seq + [padding_token] * (max_sequence_length - len(seq))) for seq in data]
 
 # Convert the padded data to a PyTorch tensor
@@ -52,29 +52,31 @@ class Generator(nn.Module):
 
 
 class Discriminator(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_layers):
+    def __init__(self, input_size, hidden_dim, num_layers):
         super(Discriminator, self).__init__()
-        self.input_dim = input_dim
+        self.input_size = input_size  # Update to the actual size of the padded MIDI sequences
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         
         # LSTM layers
-        self.lstm = nn.LSTM(input_size=input_dim, hidden_size=hidden_dim, num_layers=num_layers, batch_first=True)
+        self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_dim, num_layers=num_layers, batch_first=True)
         
         # Output layer
         self.fc = nn.Linear(hidden_dim, 1)
     
     def forward(self, x):
-        # x: Input MIDI sequence (batch_size, sequence_length, input_dim)
+        # x: Input MIDI sequence (batch_size, sequence_length, input_size)
         output, _ = self.lstm(x)
-        output = self.fc(output)
+        output = self.fc(output[:, -1, :])  # Use the last LSTM output of each sequence
         return output.squeeze()
+
+
 
 # Continue from the previous code
 
 # Set hyperparameters
 latent_dim = 100  # Dimension of the latent vector
-vocab_size = 124  # Size of the vocabulary (number of unique MIDI messages)
+vocab_size = 12  # Size of the vocabulary (number of unique MIDI messages)
 hidden_dim = 128  # Number of hidden units in LSTM layers
 num_layers = 2  # Number of LSTM layers
 
