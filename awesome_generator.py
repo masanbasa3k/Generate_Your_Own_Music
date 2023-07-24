@@ -3,32 +3,38 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence  # Import pad_sequence from torch.nn.utils.rnn
-
-
+import torch.nn.functional as F
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+import torch.nn.utils.rnn as rnn_utils
 
 
 data = []
-for i in range(1,10):
+for i in range(1,20):
     d = midi_to_numeric(f'archive/{i}.mid')[0]
-    print(f'{i}.mid file len :{len(d)}')
-    data.append(d)
+    data.append(d) 
+    
+max_len = max(len(d) for d in data)
 
-# Find the maximum sequence length in the data
+for i in range(len(data)):
+    diff = max_len - len(data[i])
+    if diff > 0:
+        data[i] += [0] * diff  
+
+# Pad the sequences to the maximum length in the dataset
 max_sequence_length = max(len(seq) for seq in data)
-
-# Pad the sequences to the maximum length
-padding_token = -1  # Choose an appropriate padding token
-padded_data = [torch.tensor(seq + [padding_token] * (max_sequence_length - len(seq))) for seq in data]
+padded_data = [torch.tensor(seq + [0] * (max_sequence_length - len(seq))) for seq in data]
 
 # Convert the padded data to a PyTorch tensor
 data_tensor = pad_sequence(padded_data, batch_first=True)
 
-# Create a TensorDataset from the data
-dataset = TensorDataset(data_tensor)
+# Create a TensorDataset with the input data and their corresponding lengths
+dataset_with_lengths = TensorDataset(data_tensor, torch.tensor([len(seq) for seq in data]))
 
-# Set batch size and create DataLoader
+# Create a DataLoader from the dataset with lengths
 batch_size = 64  # Adjust the batch size as per your memory capacity
-data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+data_loader = DataLoader(dataset_with_lengths, batch_size=batch_size, shuffle=True)
+
+
 
 class Generator(nn.Module):
     def __init__(self, latent_dim, vocab_size, hidden_dim, num_layers):
@@ -54,7 +60,7 @@ class Generator(nn.Module):
 class Discriminator(nn.Module):
     def __init__(self, input_size, hidden_dim, num_layers):
         super(Discriminator, self).__init__()
-        self.input_size = input_size  # Update to the actual size of the padded MIDI sequences
+        self.input_size = input_size
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         
@@ -62,21 +68,40 @@ class Discriminator(nn.Module):
         self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_dim, num_layers=num_layers, batch_first=True)
         
         # Output layer
-        self.fc = nn.Linear(hidden_dim, 1)
+        self.fc = nn.Linear(hidden_dim, 1)  # Output a single value for each sequence
     
-    def forward(self, x):
+    def forward(self, x, lengths):
         # x: Input MIDI sequence (batch_size, sequence_length, input_size)
-        output, _ = self.lstm(x)
-        output = self.fc(output[:, -1, :])  # Use the last LSTM output of each sequence
+        x = x.float()
+
+        # Get the 1-dimensional lengths tensor from the input
+        lengths = lengths.squeeze()
+
+        # Check the shape of x and make sure it's 3-dimensional
+        if len(x.shape) != 3:
+            x = x.unsqueeze(2)
+
+        # Pack the input sequences before feeding them to the LSTM
+        x_packed = rnn_utils.pack_padded_sequence(x, lengths, batch_first=True, enforce_sorted=False)
+        output_packed, _ = self.lstm(x_packed)
+
+        # Unpack the output sequences
+        output, _ = rnn_utils.pad_packed_sequence(output_packed, batch_first=True)
+
+        # Use the last time step of the LSTM output
+        last_time_step = output[torch.arange(output.size(0)), lengths - 1]
+
+        output = self.fc(last_time_step)
         return output.squeeze()
 
 
 
-# Continue from the previous code
+
+
 
 # Set hyperparameters
 latent_dim = 100  # Dimension of the latent vector
-vocab_size = 12  # Size of the vocabulary (number of unique MIDI messages)
+vocab_size = len(data[0])  # Size of the vocabulary (number of unique MIDI messages)
 hidden_dim = 128  # Number of hidden units in LSTM layers
 num_layers = 2  # Number of LSTM layers
 
@@ -93,7 +118,7 @@ discriminator_optimizer = torch.optim.Adam(discriminator.parameters(), lr=0.001)
 num_epochs = 100  # Adjust the number of epochs as needed
 
 for epoch in range(num_epochs):
-    for batch in data_loader:
+    for batch, lengths in data_loader:  # Unpack the batch and lengths
         real_sequences = batch[0]
         batch_size = real_sequences.size(0)
 
@@ -103,12 +128,12 @@ for epoch in range(num_epochs):
 
         discriminator_optimizer.zero_grad()
 
-        real_outputs = discriminator(real_sequences)
+        real_outputs = discriminator(real_sequences, lengths)  # Pass lengths to the Discriminator
         real_loss = criterion(real_outputs, real_labels)
 
         latent_vector = torch.randn(batch_size, 1, latent_dim)
         fake_sequences = generator(latent_vector)
-        fake_outputs = discriminator(fake_sequences.detach())
+        fake_outputs = discriminator(fake_sequences.detach(), [latent_vector.size(1)] * batch_size)  # Use fixed length for fake sequences
         fake_loss = criterion(fake_outputs, fake_labels)
 
         discriminator_loss = real_loss + fake_loss
@@ -120,7 +145,7 @@ for epoch in range(num_epochs):
 
         latent_vector = torch.randn(batch_size, 1, latent_dim)
         fake_sequences = generator(latent_vector)
-        fake_outputs = discriminator(fake_sequences)
+        fake_outputs = discriminator(fake_sequences, [latent_vector.size(1)] * batch_size)  # Use fixed length for fake sequences
         generator_loss = criterion(fake_outputs, real_labels)
 
         generator_loss.backward()
