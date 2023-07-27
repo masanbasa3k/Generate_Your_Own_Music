@@ -70,7 +70,7 @@ def prepare_sequences(notes, n_vocab):
     network_input = (network_input - float(n_vocab) / 2) / (float(n_vocab) / 2)
     network_output = to_categorical(network_output, num_classes=n_vocab)  # Use to_categorical from TensorFlow's Keras
 
-    return (network_input, network_output)
+
 
 def generate_notes(model, network_input, n_vocab):
     """ Generate notes from the neural network based on a sequence of notes """
@@ -174,6 +174,11 @@ class GAN():
         model.add(LeakyReLU(alpha=0.2))
         model.add(Dense(256))
         model.add(LeakyReLU(alpha=0.2))
+        
+        # Adding Minibatch Discrimination
+        model.add(Dense(100))
+        model.add(LeakyReLU(alpha=0.2))
+        model.add(Dropout(0.5))
         model.add(Dense(1, activation='sigmoid'))
         model.summary()
 
