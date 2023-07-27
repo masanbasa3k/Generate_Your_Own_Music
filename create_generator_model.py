@@ -1,208 +1,280 @@
+from __future__ import print_function, division
+
+import sys
+import matplotlib.pyplot as plt
 import numpy as np
-import os
+import pickle
+import glob
 import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Reshape, Flatten, concatenate
-from tensorflow.keras.layers import Conv2D, Conv2DTranspose
-from tensorflow.keras.layers import LeakyReLU, Dropout
-from sklearn.model_selection import train_test_split
-import librosa
+from tensorflow.keras.layers import Input, Dense, Reshape, Dropout, LSTM, Bidirectional
+from tensorflow.keras.layers import BatchNormalization, Activation, ZeroPadding2D
+from tensorflow.keras.layers import LeakyReLU
+from tensorflow.keras.models import Sequential, Model
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.utils import to_categorical
 
+# Add the import for 'music21' library
+from music21 import converter, instrument, note, chord, stream
 
+def get_notes():
+    """ Get all the notes and chords from the midi files """
+    notes = []
 
-def define_generator(latent_dim, num_classes):
-    model = Sequential()
+    for file in glob.glob("archive/*.mid"):
+        midi = converter.parse(file)
 
-    # Dense layer with input as noise vector and conditional input
-    model.add(Dense(256, input_dim=latent_dim+num_classes))
-    model.add(LeakyReLU(alpha=0.2))
-    model.add(Dense(512))
-    model.add(LeakyReLU(alpha=0.2))
-    model.add(Dense(1024))
-    model.add(LeakyReLU(alpha=0.2))
-    model.add(Dense(1292, activation='tanh'))
+        print("Parsing %s" % file)
 
-    # Reshape the output to match the desired shape
-    model.add(Reshape((13, 99, 1)))
+        notes_to_parse = None
 
-    return model
+        try: # file has instrument parts
+            s2 = instrument.partitionByInstrument(midi)
+            notes_to_parse = s2.parts[0].recurse() 
+        except: # file has notes in a flat structure
+            notes_to_parse = midi.flat.notes
+            
+        for element in notes_to_parse:
+            if isinstance(element, note.Note):
+                notes.append(str(element.pitch))
+            elif isinstance(element, chord.Chord):
+                notes.append('.'.join(str(n) for n in element.normalOrder))
 
+    return notes
+
+def prepare_sequences(notes, n_vocab):
+    """ Prepare the sequences used by the Neural Network """
+    sequence_length = 100
+
+    # Get all pitch names
+    pitchnames = sorted(set(item for item in notes))
+
+    # Create a dictionary to map pitches to integers
+    note_to_int = dict((note, number) for number, note in enumerate(pitchnames))
+
+    network_input = []
+    network_output = []
+
+    # create input sequences and the corresponding outputs
+    for i in range(0, len(notes) - sequence_length, 1):
+        sequence_in = notes[i:i + sequence_length]
+        sequence_out = notes[i + sequence_length]
+        network_input.append([note_to_int[char] for char in sequence_in])
+        network_output.append(note_to_int[sequence_out])
+
+    n_patterns = len(network_input)
+
+    # Reshape the input into a format compatible with LSTM layers
+    network_input = np.reshape(network_input, (n_patterns, sequence_length, 1))
     
-def define_discriminator(input_shape, num_classes):
-    model = Sequential()
+    # Normalize input between -1 and 1
+    network_input = (network_input - float(n_vocab) / 2) / (float(n_vocab) / 2)
+    network_output = to_categorical(network_output, num_classes=n_vocab)  # Use to_categorical from TensorFlow's Keras
 
-    # Reshape the input to match the desired shape
-    model.add(Reshape((13, 99, 1), input_shape=input_shape))
+    return (network_input, network_output)
 
-    # Convolutional layers
-    model.add(Conv2D(64, (3, 3), strides=(2, 2), padding='same'))
-    model.add(LeakyReLU(alpha=0.2))
-    model.add(Dropout(0.25))
-    model.add(Conv2D(128, (3, 3), strides=(2, 2), padding='same'))
-    model.add(LeakyReLU(alpha=0.2))
-    model.add(Dropout(0.25))
-    model.add(Conv2D(256, (3, 3), strides=(2, 2), padding='same'))
-    model.add(LeakyReLU(alpha=0.2))
-    model.add(Dropout(0.25))
-    model.add(Conv2D(512, (3, 3), strides=(2, 2), padding='same'))
-    model.add(LeakyReLU(alpha=0.2))
-    model.add(Dropout(0.25))
-
-    # Flatten the output and concatenate with the conditional input
-    model.add(Flatten())
-    model.add(Dense(512))
-    model.add(LeakyReLU(alpha=0.2))
-    model.add(Dropout(0.25))
-    model.add(Dense(1, activation='sigmoid'))
-
-    return model
-
+def generate_notes(model, network_input, n_vocab):
+    """ Generate notes from the neural network based on a sequence of notes """
+    # pick a random sequence from the input as a starting point for the prediction
+    start = np.random.randint(0, len(network_input)-1)
     
-def define_gan(generator, discriminator):
-    discriminator.trainable = False  # Freeze the discriminator weights during GAN training
+    # Get pitch names and store in a dictionary
+    pitchnames = sorted(set(item for item in notes))
+    int_to_note = dict((number, note) for number, note in enumerate(pitchnames))
 
-    model = Sequential()
-    model.add(generator)
-    model.add(discriminator)
+    pattern = network_input[start]
+    prediction_output = []
 
-    return model
+    # generate 500 notes
+    for note_index in range(500):
+        prediction_input = np.reshape(pattern, (1, len(pattern), 1))
+        prediction_input = prediction_input / float(n_vocab)
 
+        prediction = model.predict(prediction_input, verbose=0)
 
+        index = np.argmax(prediction)
+        result = int_to_note[index]
+        prediction_output.append(result)
+        
+        pattern = np.append(pattern,index)
+        #pattern.append(index)
+        pattern = pattern[1:len(pattern)]
 
-def train(generator, discriminator, gan, trackset1, trackset2, epochs, batch_size):
-    # Determine the number of batches per epoch
-    num_batches = trackset1.shape[0] // batch_size
+    return prediction_output
+  
+def create_midi(prediction_output, filename):
+    """ convert the output from the prediction to notes and create a midi file
+        from the notes """
+    offset = 0
+    output_notes = []
 
-    for epoch in range(epochs):
-        for batch in range(num_batches):
-            # ---------------------
+    # create note and chord objects based on the values generated by the model
+    for item in prediction_output:
+        pattern = item[0]
+        # pattern is a chord
+        if ('.' in pattern) or pattern.isdigit():
+            notes_in_chord = pattern.split('.')
+            notes = []
+            for current_note in notes_in_chord:
+                new_note = note.Note(int(current_note))
+                new_note.storedInstrument = instrument.Piano()
+                notes.append(new_note)
+            new_chord = chord.Chord(notes)
+            new_chord.offset = offset
+            output_notes.append(new_chord)
+        # pattern is a note
+        else:
+            new_note = note.Note(pattern)
+            new_note.offset = offset
+            new_note.storedInstrument = instrument.Piano()
+            output_notes.append(new_note)
+
+        # increase offset each iteration so that notes do not stack
+        offset += 0.5
+
+    midi_stream = stream.Stream(output_notes)
+    midi_stream.write('midi', fp='{}.mid'.format(filename))
+
+class GAN():
+    def __init__(self, rows):
+        self.seq_length = rows
+        self.seq_shape = (self.seq_length, 1)
+        self.latent_dim = 1000
+        self.disc_loss = []
+        self.gen_loss =[]
+        
+        optimizer = Adam(0.0002, 0.5)
+
+        # Build and compile the discriminator
+        self.discriminator = self.build_discriminator()
+        self.discriminator.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
+
+        # Build the generator
+        self.generator = self.build_generator()
+
+        # The generator takes noise as input and generates note sequences
+        z = Input(shape=(self.latent_dim,))
+        generated_seq = self.generator(z)
+
+        # For the combined model we will only train the generator
+        self.discriminator.trainable = False
+
+        # The discriminator takes generated images as input and determines validity
+        validity = self.discriminator(generated_seq)
+
+        # The combined model  (stacked generator and discriminator)
+        # Trains the generator to fool the discriminator
+        self.combined = Model(z, validity)
+        self.combined.compile(loss='binary_crossentropy', optimizer=optimizer)
+
+    def build_discriminator(self):
+        model = Sequential()
+        model.add(LSTM(512, input_shape=self.seq_shape, return_sequences=True))
+        model.add(Bidirectional(LSTM(512)))
+        model.add(Dense(512))
+        model.add(LeakyReLU(alpha=0.2))
+        model.add(Dense(256))
+        model.add(LeakyReLU(alpha=0.2))
+        model.add(Dense(1, activation='sigmoid'))
+        model.summary()
+
+        seq = Input(shape=self.seq_shape)
+        validity = model(seq)
+
+        return Model(seq, validity)
+      
+    def build_generator(self):
+
+        model = Sequential()
+        model.add(Dense(256, input_dim=self.latent_dim))
+        model.add(LeakyReLU(alpha=0.2))
+        model.add(BatchNormalization(momentum=0.8))
+        model.add(Dense(512))
+        model.add(LeakyReLU(alpha=0.2))
+        model.add(BatchNormalization(momentum=0.8))
+        model.add(Dense(1024))
+        model.add(LeakyReLU(alpha=0.2))
+        model.add(BatchNormalization(momentum=0.8))
+        model.add(Dense(np.prod(self.seq_shape), activation='tanh'))
+        model.add(Reshape(self.seq_shape))
+        model.summary()
+        
+        noise = Input(shape=(self.latent_dim,))
+        seq = model(noise)
+
+        return Model(noise, seq)
+
+    def train(self, epochs, batch_size=128, sample_interval=50):
+
+        # Load and convert the data
+        notes = get_notes()
+        n_vocab = len(set(notes))
+        X_train, y_train = prepare_sequences(notes, n_vocab)
+
+        # Adversarial ground truths
+        real = np.ones((batch_size, 1))
+        fake = np.zeros((batch_size, 1))
+        
+        # Training the model
+        for epoch in range(epochs):
+
+            # Training the discriminator
+            # Select a random batch of note sequences
+            idx = np.random.randint(0, X_train.shape[0], batch_size)
+            real_seqs = X_train[idx]
+
+            #noise = np.random.choice(range(484), (batch_size, self.latent_dim))
+            #noise = (noise-242)/242
+            noise = np.random.normal(0, 1, (batch_size, self.latent_dim))
+
+            # Generate a batch of new note sequences
+            gen_seqs = self.generator.predict(noise)
+
             # Train the discriminator
-            # ---------------------
-
-            # Generate random noise samples
-            noise = np.random.normal(0, 1, (batch_size, latent_dim))
-
-            # Select a random batch of real music tracks from trackset1
-            real_tracks = trackset1[batch * batch_size : (batch + 1) * batch_size]
-
-            # Generate fake music tracks using the generator
-            fake_tracks = generator.predict([noise, labels1[batch * batch_size : (batch + 1) * batch_size]])
-
-            # Create labels for real and fake tracks
-            real_labels = np.ones((batch_size, 1))
-            fake_labels = np.zeros((batch_size, 1))
-
-            # Train the discriminator on real tracks
-            d_loss_real = discriminator.train_on_batch(real_tracks, real_labels)
-
-            # Train the discriminator on fake tracks
-            d_loss_fake = discriminator.train_on_batch(fake_tracks, fake_labels)
-
-            # Compute the average discriminator loss
+            d_loss_real = self.discriminator.train_on_batch(real_seqs, real)
+            d_loss_fake = self.discriminator.train_on_batch(gen_seqs, fake)
             d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
 
-            # -----------------
-            # Train the generator
-            # -----------------
 
-            # Generate new random noise samples
-            noise = np.random.normal(0, 1, (batch_size, latent_dim))
+            #  Training the Generator
+            noise = np.random.normal(0, 1, (batch_size, self.latent_dim))
 
-            # Set labels for the generated tracks as real
-            gen_labels = np.ones((batch_size, 1))
+            # Train the generator (to have the discriminator label samples as real)
+            g_loss = self.combined.train_on_batch(noise, real)
 
-            # Train the GAN with the discriminator weights fixed
-            g_loss = gan.train_on_batch([noise, labels1[batch * batch_size : (batch + 1) * batch_size]], gen_labels)
+            # Print the progress and save into loss lists
+            if epoch % sample_interval == 0:
+              print ("%d [D loss: %f, acc.: %.2f%%] [G loss: %f]" % (epoch, d_loss[0], 100*d_loss[1], g_loss))
+              self.disc_loss.append(d_loss[0])
+              self.gen_loss.append(g_loss)
+        
+        self.generate(notes)
+        self.plot_loss()
+        
+    def generate(self, input_notes):
+        # Get pitch names and store in a dictionary
+        notes = input_notes
+        pitchnames = sorted(set(item for item in notes))
+        int_to_note = dict((number, note) for number, note in enumerate(pitchnames))
+        
+        # Use random noise to generate sequences
+        noise = np.random.normal(0, 1, (1, self.latent_dim))
+        predictions = self.generator.predict(noise)
+        
+        pred_notes = [x*242+242 for x in predictions[0]]
+        pred_notes = [int_to_note[int(x)] for x in pred_notes]
+        
+        create_midi(pred_notes, 'gan_final')
+        
+    def plot_loss(self):
+        plt.plot(self.disc_loss, c='red')
+        plt.plot(self.gen_loss, c='blue')
+        plt.title("GAN Loss per Epoch")
+        plt.legend(['Discriminator', 'Generator'])
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.savefig('GAN_Loss_per_Epoch_final.png', transparent=True)
+        plt.close()
 
-            # Print the progress
-            print(f"Epoch: {epoch+1}/{epochs} | Batch: {batch+1}/{num_batches} | D loss: {d_loss[0]:.4f} | G loss: {g_loss:.4f}")
-
-        # --------------------------
-        # Generate samples for evaluation
-        # --------------------------
-
-        # Generate a random noise sample
-        noise = np.random.normal(0, 1, (1, latent_dim))
-
-        # Select a random genre label
-        random_label = np.random.randint(0, num_classes)
-
-        # Generate a music track using the generator
-        generated_track = generator.predict([noise, random_label])
-
-        # Save the generated track
-        # save_generated_track(generated_track, epoch)
-
-    # Save the final models
-    # save_models(generator, discriminator, gan)
-
-
-    
-
-from pydub import AudioSegment
-
-def preprocess_audio(audio_file):
-    # Load the audio file using pydub
-    audio = AudioSegment.from_file(audio_file)
-
-    # Convert the audio to a numpy array and normalize to the range [-1, 1]
-    audio_data = np.array(audio.get_array_of_samples()) / 32768.0
-
-    # Resample the audio if needed
-    sr = audio.frame_rate
-    if sr != 22050:
-        audio_data = librosa.resample(audio_data, sr, 22050)
-        sr = 22050
-
-    # Extract MFCC features
-    mfcc = librosa.feature.mfcc(y=audio_data, sr=sr, n_mfcc=13)  # Adjust the number of MFCC coefficients if needed
-
-    return mfcc
-
-
-
-
-import os
-
-def dataset_loader():
-    BASE_PATH = 'Data/genres_original'
-
-    # Load the preprocessed MFCC features and corresponding labels
-    features = []
-    labels = []
-
-    # Loop over the audio files in the dataset
-    for root, dirs, files in os.walk(BASE_PATH):
-        for file in files:
-            # Load the MFCC features
-            audio_path = os.path.join(root, file)
-            mfcc = preprocess_audio(audio_path)
-
-            # Load the genre label from the folder name
-            label = os.path.basename(root)
-
-            # Append the features and labels to the corresponding lists
-            features.append(mfcc)
-            labels.append(label)
-
-    # Convert the lists to NumPy arrays
-    features = np.array(features)
-    labels = np.array(labels)
-
-    return features, labels
-
-
-
-# Load the dataset
-trackset, labels = dataset_loader()
-
-# Split the dataset into trackset1 and trackset2
-trackset1, trackset2, labels1, labels2 = train_test_split(trackset, labels, test_size=0.2, random_state=42)
-
-
-latent_dim = 100
-generator = define_generator(latent_dim)
-discriminator = define_discriminator()
-gan = define_gan(generator, discriminator)
-train(generator, discriminator, gan, trackset1, trackset2, epochs=100, batch_size=64)
-
+if __name__ == '__main__':
+  gan = GAN(rows=100)    
+  gan.train(epochs=5000, batch_size=32, sample_interval=1)
