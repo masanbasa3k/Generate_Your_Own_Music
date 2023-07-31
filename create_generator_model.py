@@ -1,38 +1,32 @@
-from __future__ import print_function, division
-
-import sys
-import matplotlib.pyplot as plt
 import numpy as np
-import pickle
-import glob
 import tensorflow as tf
 from tensorflow.keras.layers import Input, Dense, Reshape, Dropout, LSTM, Bidirectional
-from tensorflow.keras.layers import BatchNormalization, Activation, ZeroPadding2D
-from tensorflow.keras.layers import LeakyReLU
+from tensorflow.keras.layers import BatchNormalization, LeakyReLU
 from tensorflow.keras.models import Sequential, Model
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.utils import to_categorical
-
-# Add the import for 'music21' library
 from music21 import converter, instrument, note, chord, stream
+from pathlib import Path
+import matplotlib.pyplot as plt
+
+
+SEQUENCE_LENGTH = 100
+LATENT_DIMENSION = 1000
+BATCH_SIZE = 16
+EPOCHS = 100
+SAMPLE_INTERVAL = 1
 
 def get_notes():
     """ Get all the notes and chords from the midi files """
     notes = []
 
-    for file in glob.glob("archive/*.mid"):
+    for file in Path("archive").glob("*.mid"):
         midi = converter.parse(file)
 
         print("Parsing %s" % file)
 
-        notes_to_parse = None
+        notes_to_parse = midi.flat.notes
 
-        try: # file has instrument parts
-            s2 = instrument.partitionByInstrument(midi)
-            notes_to_parse = s2.parts[0].recurse() 
-        except: # file has notes in a flat structure
-            notes_to_parse = midi.flat.notes
-            
         for element in notes_to_parse:
             if isinstance(element, note.Note):
                 notes.append(str(element.pitch))
@@ -249,9 +243,9 @@ class GAN():
 
             # Print the progress and save into loss lists
             if epoch % sample_interval == 0:
-              print ("%d [D loss: %f, acc.: %.2f%%] [G loss: %f]" % (epoch, d_loss[0], 100*d_loss[1], g_loss))
-              self.disc_loss.append(d_loss[0])
-              self.gen_loss.append(g_loss)
+                print ("%d [D loss: %f, acc.: %.2f%%] [G loss: %f]" % (epoch, d_loss[0], 100*d_loss[1], g_loss))
+                self.disc_loss.append(d_loss[0])
+                self.gen_loss.append(g_loss)
         
         self.generate(notes)
         self.plot_loss()
@@ -292,5 +286,9 @@ class GAN():
         plt.close()
 
 if __name__ == '__main__':
-  gan = GAN(rows=100)    
-  gan.train(epochs=100, batch_size=16, sample_interval=1)
+    gan = GAN(rows=SEQUENCE_LENGTH)    
+    gan.train(epochs=EPOCHS, batch_size=BATCH_SIZE, sample_interval=SAMPLE_INTERVAL)
+
+    # Save the generator and discriminator models
+    gan.generator.save("generator_model.h5")
+    gan.discriminator.save("discriminator_model.h5")
