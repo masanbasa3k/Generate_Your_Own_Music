@@ -70,6 +70,7 @@ def prepare_sequences(notes, n_vocab):
     network_input = (network_input - float(n_vocab) / 2) / (float(n_vocab) / 2)
     network_output = to_categorical(network_output, num_classes=n_vocab)  # Use to_categorical from TensorFlow's Keras
 
+    return network_input, network_output  # Add this return statement
 
 
 def generate_notes(model, network_input, n_vocab):
@@ -266,9 +267,19 @@ class GAN():
         predictions = self.generator.predict(noise)
         
         pred_notes = [x*242+242 for x in predictions[0]]
-        pred_notes = [int_to_note[int(x)] for x in pred_notes]
         
-        create_midi(pred_notes, 'gan_final')
+        # Map generated integer indices to note names, with error handling
+        pred_notes_mapped = []
+        for x in pred_notes:
+            index = int(x)
+            if index in int_to_note:
+                pred_notes_mapped.append(int_to_note[index])
+            else:
+                # Fallback mechanism: Choose a default note when the index is out of range
+                pred_notes_mapped.append('C5')  # You can choose any default note here
+        
+        create_midi(pred_notes_mapped, 'gan_final')
+
         
     def plot_loss(self):
         plt.plot(self.disc_loss, c='red')
@@ -282,4 +293,4 @@ class GAN():
 
 if __name__ == '__main__':
   gan = GAN(rows=100)    
-  gan.train(epochs=5000, batch_size=32, sample_interval=1)
+  gan.train(epochs=2, batch_size=32, sample_interval=1)
