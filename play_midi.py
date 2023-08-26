@@ -1,19 +1,16 @@
 import pygame
 import time
 
-def load_midi(file_path):
-    pygame.mixer.music.load(file_path)
 
-def play_midi():
+def play_midi(filename):
+    pygame.mixer.init()
+    pygame.mixer.music.load(filename)
     pygame.mixer.music.play()
-
-    # Add some delay to allow the MIDI to play (change the duration as needed)
-    time.sleep(10)  # Play for 10 seconds, you can adjust the duration
-    pygame.mixer.music.stop()
+    while pygame.mixer.music.get_busy():
+        pygame.time.Clock().tick(30) 
 
 if __name__ == "__main__":
     pygame.init()
 
-    midi_file_path = "gan_final.mid"
-    load_midi(midi_file_path)
-    play_midi()
+    midi_file_path = "generated_music.mid"
+    play_midi(midi_file_path)
