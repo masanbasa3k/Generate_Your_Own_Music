@@ -66,35 +66,6 @@ def prepare_sequences(notes, n_vocab):
 
     return network_input, network_output  # Add this return statement
 
-
-def generate_notes(model, network_input, n_vocab):
-    """ Generate notes from the neural network based on a sequence of notes """
-    # pick a random sequence from the input as a starting point for the prediction
-    start = np.random.randint(0, len(network_input)-1)
-    
-    # Get pitch names and store in a dictionary
-    pitchnames = sorted(set(item for item in notes))
-    int_to_note = dict((number, note) for number, note in enumerate(pitchnames))
-
-    pattern = network_input[start]
-    prediction_output = []
-
-    # generate 500 notes
-    for note_index in range(500):
-        prediction_input = np.reshape(pattern, (1, len(pattern), 1))
-        prediction_input = prediction_input / float(n_vocab)
-
-        prediction = model.predict(prediction_input, verbose=0)
-
-        index = np.argmax(prediction)
-        result = int_to_note[index]
-        prediction_output.append(result)
-        
-        pattern = np.append(pattern,index)
-        #pattern.append(index)
-        pattern = pattern[1:len(pattern)]
-
-    return prediction_output
   
 def create_midi(prediction_output, filename):
     """ convert the output from the prediction to notes and create a midi file
